@@ -98,4 +98,124 @@ html_static_path = ['_static']
 
 
 
+### Additional code from pandas
 
+# Add custom Documenter to handle attributes/methods of an AccessorProperty
+# eg pandas.Series.str and pandas.Series.dt (see GH9322)
+
+import sphinx
+from sphinx.util import rpartition
+from sphinx.ext.autodoc import Documenter, MethodDocumenter, AttributeDocumenter
+
+
+class AccessorDocumenter(MethodDocumenter):
+    """
+    Specialized Documenter subclass for accessors.
+    """
+
+    objtype = 'accessor'
+    directivetype = 'method'
+
+    # lower than MethodDocumenter so this is not chosen for normal methods
+    priority = 0.6
+
+    def format_signature(self):
+        # this method gives an error/warning for the accessors, therefore
+        # overriding it (accessor has no arguments)
+        return ''
+
+
+class AccessorLevelDocumenter(Documenter):
+    """
+    Specialized Documenter subclass for objects on accessor level (methods,
+    attributes).
+    """
+
+    # This is the simple straightforward version
+    # modname is None, base the last elements (eg 'hour')
+    # and path the part before (eg 'Series.dt')
+    # def resolve_name(self, modname, parents, path, base):
+    #     modname = 'pandas'
+    #     mod_cls = path.rstrip('.')
+    #     mod_cls = mod_cls.split('.')
+    #
+    #     return modname, mod_cls + [base]
+
+    def resolve_name(self, modname, parents, path, base):
+        if modname is None:
+            if path:
+                mod_cls = path.rstrip('.')
+            else:
+                mod_cls = None
+                # if documenting a class-level object without path,
+                # there must be a current class, either from a parent
+                # auto directive ...
+                mod_cls = self.env.temp_data.get('autodoc:class')
+                # ... or from a class directive
+                if mod_cls is None:
+                    mod_cls = self.env.temp_data.get('py:class')
+                # ... if still None, there's no way to know
+                if mod_cls is None:
+                    return None, []
+            # HACK: this is added in comparison to ClassLevelDocumenter
+            # mod_cls still exists of class.accessor, so an extra
+            # rpartition is needed
+            modname, accessor = rpartition(mod_cls, '.')
+            modname, cls = rpartition(modname, '.')
+            parents = [cls, accessor]
+            # if the module name is still missing, get it like above
+            if not modname:
+                modname = self.env.temp_data.get('autodoc:module')
+            if not modname:
+                if sphinx.__version__ > '1.3':
+                    modname = self.env.ref_context.get('py:module')
+                else:
+                    modname = self.env.temp_data.get('py:module')
+            # ... else, it stays None, which means invalid
+        return modname, parents + [base]
+
+
+class AccessorAttributeDocumenter(AccessorLevelDocumenter, AttributeDocumenter):
+
+    objtype = 'accessorattribute'
+    directivetype = 'attribute'
+
+    # lower than AttributeDocumenter so this is not chosen for normal attributes
+    priority = 0.6
+
+class AccessorMethodDocumenter(AccessorLevelDocumenter, MethodDocumenter):
+
+    objtype = 'accessormethod'
+    directivetype = 'method'
+
+    # lower than MethodDocumenter so this is not chosen for normal methods
+    priority = 0.6
+
+
+class AccessorCallableDocumenter(AccessorLevelDocumenter, MethodDocumenter):
+    """
+    This documenter lets us removes .__call__ from the method signature for
+    callable accessors like Series.plot
+    """
+    objtype = 'accessorcallable'
+    directivetype = 'method'
+
+    # lower than MethodDocumenter; otherwise the doc build prints warnings
+    priority = 0.5
+
+    def format_name(self):
+        return MethodDocumenter.format_name(self).rstrip('.__call__')
+
+
+# remove the docstring of the flags attribute (inherited from numpy ndarray)
+# because these give doc build errors (see GH issue 5331)
+def remove_flags_docstring(app, what, name, obj, options, lines):
+    if what == "attribute" and name.endswith(".flags"):
+        del lines[:]
+
+def setup(app):
+    app.connect("autodoc-process-docstring", remove_flags_docstring)
+    app.add_autodocumenter(AccessorDocumenter)
+    app.add_autodocumenter(AccessorAttributeDocumenter)
+    app.add_autodocumenter(AccessorMethodDocumenter)
+    app.add_autodocumenter(AccessorCallableDocumenter)
